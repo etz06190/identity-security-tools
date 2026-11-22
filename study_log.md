@@ -87,3 +87,65 @@ The access token is what the client uses to access resources on a resource serve
 
 The two tokens have different audiences. In my case, the audience of the access token is the Microsoft Graph API, whereas the audience of the ID token is the client itself, identified by its client ID.
  
+### Interactive vs non-interactive sign-ins
+
+**Interactive sign-in**
+A sign-in is interactive when the user signs in to the authorization server
+(Entra ID) and must do something to complete it: enter credentials, complete
+MFA, or give consent.
+
+**Non-interactive sign-in**
+A sign-in is non-interactive when the client application obtains tokens on the
+user's behalf without the user doing anything. Instead of credentials, the
+client presents something it received from the authorization server after an
+earlier interactive sign-in, such as an authorization code, a refresh token or
+a session token. The sign-in is still recorded under the user's account, but
+the user takes no action. A non-interactive sign-in therefore always depends
+on an earlier interactive one.
+
+**Evidence from the lab (Sentinel)**
+
+Interactive sign-ins to the lab app (`SigninLogs`), times as displayed:
+
+| Time | App | ClientAppUsed | AuthenticationRequirement | ConditionalAccessStatus | ResultType | Meaning |
+|---|---|---|---|---|---|---|
+| 11/20 03:58:43 | lab-authcode-flow | Browser | singleFactorAuthentication | notApplied | 0 | Sign-in succeeded |
+| 11/20 03:58:58 | lab-authcode-flow | Browser | singleFactorAuthentication | notApplied | 65001 | Consent required: consent screen shown |
+| 11/20 04:01:01 | lab-authcode-flow | Browser | singleFactorAuthentication | notApplied | 0 | Sign-in completed |
+| 11/20 04:07:40 | lab-authcode-flow | Browser | singleFactorAuthentication | notApplied | 0 | New code requested |
+| 11/20 04:21:43 | lab-authcode-flow | Browser | singleFactorAuthentication | notApplied | 0 | Sign-in after consent was revoked |
+| 11/20 04:22:24 | lab-authcode-flow | Browser | singleFactorAuthentication | notApplied | 50140 | "Stay signed in?" prompt |
+
+Every row has the user present in a browser, single-factor authentication, and
+no Conditional Access policy applied.
+
+Non-interactive sign-ins (`AADNonInteractiveUserSignInLogs`):
+
+| App | ClientAppUsed | IncomingTokenType | ResultType | Meaning |
+|---|---|---|---|---|
+| lab-authcode-flow | Browser | none | 70008 | Code redemption failed: code expired or already used |
+| lab-authcode-flow | Browser | none | 70008 | Code redemption failed: code expired or already used |
+| lab-authcode-flow | Browser | none | 0 | Code redeemed for tokens (the curl POST to `/token`) |
+| Microsoft Authentication Broker | Mobile Apps and Desktop clients | primaryRefreshToken | 0 | Broker on a device silently obtaining tokens with a Primary Refresh Token |
+| Graph Explorer | Browser | none | 0 | Graph Explorer obtaining a token silently |
+
+Findings:
+- Redeeming the authorization code at the token endpoint is logged as a
+  non-interactive sign-in. The user is not involved in that step: the client
+  presents the code it received from the interactive sign-in.
+- The two `70008` failures match the lab's main pitfall: an authorization code
+  is single-use and expires after about 10 minutes.
+- No refresh-token renewals appear for the lab app, because `offline_access`
+  was not requested and no refresh token was issued.
+- The `primaryRefreshToken` rows show the other common source of
+  non-interactive sign-ins: a device broker reusing a device-level token to
+  obtain new tokens with no user action.
+
+**Why a SOC cares**
+An attacker holding a stolen refresh token can obtain access tokens with at
+least the same scopes as the original client, without the user doing anything
+and without a new MFA prompt. These sign-ins appear only in the
+non-interactive table, so an analyst watching interactive sign-ins alone will
+miss them. To contain this, the SOC must revoke the compromised user's
+sessions and reset the user's password. Access tokens already issued remain
+valid until they expire.
